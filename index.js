@@ -16,63 +16,52 @@ const pool = new Pool({
     port: 5432
 });
 
-// 🔸 Récupérer toutes les équipes (pour vérif/synchronisation)
-app.get('/equipes', async (req, res) => {
-    try {
-        const result = await pool.query('SELECT * FROM equipes');
-        res.json(result.rows);
-    } catch (err) {
-        console.error(err);
-        res.status(500).json({ error: 'Erreur serveur' });
-    }
+// GET tous les pilotes
+app.get('/api/pilotes', async (req, res) => {
+  try {
+    const result = await pool.query('SELECT * FROM pilotes');
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
-// 🔸 Synchroniser les équipes (ajouts, modifs, suppressions)
-app.post('/synchroniser', async (req, res) => {
-    const { equipes } = req.body;
+// POST synchroniser : supprime tout et insère les pilotes envoyés
+app.post('/api/pilotes/sync', async (req, res) => {
+  const pilotes = req.body;
 
-    try {
-        // On récupère les UUID existants pour comparer
-        const dbEquipesResult = await pool.query('SELECT uuid FROM equipes');
-        const dbUuids = dbEquipesResult.rows.map(row => row.uuid);
+  if (!Array.isArray(pilotes)) {
+    return res.status(400).json({ error: 'Le body doit être un tableau de pilotes.' });
+  }
 
-        // On met à jour et insère les nouvelles équipes
-        for (let equipe of equipes) {
-            if (dbUuids.includes(equipe.uuid)) {
-                // Mise à jour
-                await pool.query(
-                    `UPDATE equipes
-                     SET nom = $1, image = $2, points = $3, favorite = $4
-                     WHERE uuid = $5`,
-                    [equipe.nom, equipe.image, equipe.points, equipe.favorite, equipe.uuid]
-                );
-            } else {
-                // Insertion
-                await pool.query(
-                    `INSERT INTO equipes (uuid, nom, image, points, favorite)
-                     VALUES ($1, $2, $3, $4, $5)`,
-                    [equipe.uuid, equipe.nom, equipe.image, equipe.points, equipe.favorite]
-                );
-            }
-        }
+  const client = await pool.connect();
 
-        // Suppression des équipes absentes dans la synchro reçue
-        const syncUuids = equipes.map(e => e.uuid);
-        const uuidsToDelete = dbUuids.filter(uuid => !syncUuids.includes(uuid));
+  try {
+    await client.query('BEGIN');
 
-        for (let uuid of uuidsToDelete) {
-            await pool.query('DELETE FROM equipes WHERE uuid = $1', [uuid]);
-        }
+    // Supprimer tous les pilotes existants
+    await client.query('DELETE FROM pilotes');
 
-        res.json({ status: 'Synchronisation terminée' });
-
-    } catch (err) {
-        console.error(err);
-        res.status(500).json({ error: 'Erreur serveur' });
+    // Insérer tous les pilotes reçus
+    for (const pilote of pilotes) {
+      await client.query(
+        'INSERT INTO pilotes (uuid, nom, no, points) VALUES ($1, $2, $3, $4)',
+        [pilote.uuid, pilote.nom, pilote.no, pilote.points]
+      );
     }
+
+    await client.query('COMMIT');
+    res.json({ message: 'Base synchronisée avec succès.' });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
+  }
 });
 
-// 🔸 Lancer le serveur
-app.listen(3000, () => {
-    console.log('Service API en ligne sur http://localhost:3000');
+// Démarrer le serveur
+const PORT = 3000;
+app.listen(PORT, () => {
+  console.log(`API démarrée sur http://localhost:${PORT}`);
 });
